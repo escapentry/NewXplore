@@ -627,6 +627,7 @@ fun SelectionBottomBar(
   onDelete: () -> Unit,
   onSelectAll: () -> Unit,
   onClear: () -> Unit,
+  onPermissionsSelected: (() -> Unit)? = null,
 ) {
   Surface(
     color = MaterialTheme.colorScheme.surfaceVariant,
@@ -656,15 +657,21 @@ fun SelectionBottomBar(
       IconButton(onClick = onMove, modifier = Modifier.testTag("sel_move_button")) {
         Icon(Icons.AutoMirrored.Rounded.DriveFileMove, contentDescription = "Move")
       }
-      if (singleSelectedEntry != null) {
-        if (allowPermissions) {
-          IconButton(
-            onClick = { onPermissions(singleSelectedEntry) },
-            modifier = Modifier.testTag("sel_permissions_button"),
-          ) {
-            Icon(Icons.Rounded.Security, contentDescription = "Permissions")
-          }
+      if (allowPermissions && selectedCount > 0) {
+        IconButton(
+          onClick = {
+            if (onPermissionsSelected != null) {
+              onPermissionsSelected()
+            } else {
+              singleSelectedEntry?.let(onPermissions)
+            }
+          },
+          modifier = Modifier.testTag("sel_permissions_button"),
+        ) {
+          Icon(Icons.Rounded.Security, contentDescription = "Permissions")
         }
+      }
+      if (singleSelectedEntry != null) {
         IconButton(
           onClick = { onRename(singleSelectedEntry) },
           modifier = Modifier.testTag("sel_rename_button"),

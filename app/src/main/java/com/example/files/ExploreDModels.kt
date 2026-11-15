@@ -136,6 +136,9 @@ data class PermissionBits(
   val setGid: Boolean = false,
   val sticky: Boolean = false,
 ) {
+  fun withoutExecuteBits(): PermissionBits =
+    copy(ownerExecute = false, groupExecute = false, otherExecute = false)
+
   fun toOctalString(alwaysFourDigits: Boolean = true): String {
     val special = (if (setUid) 4 else 0) + (if (setGid) 2 else 0) + (if (sticky) 1 else 0)
     val owner = (if (ownerRead) 4 else 0) + (if (ownerWrite) 2 else 0) + (if (ownerExecute) 1 else 0)

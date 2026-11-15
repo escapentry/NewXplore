@@ -64,9 +64,11 @@ class ExampleRobolectricTest {
   val composeTestRule = createComposeRule()
 
   @Test
-  fun `app name matches ExploreD`() {
+  fun `app name matches ExploreD and package id matches com thallyace explored`() {
     val context = ApplicationProvider.getApplicationContext<Context>()
     assertEquals("ExploreD", context.getString(R.string.app_name))
+    assertEquals("com.thallyace.explored", BuildConfig.APPLICATION_ID)
+    assertEquals("com.thallyace.explored", context.packageName)
   }
 
   @Test
@@ -155,7 +157,7 @@ class ExampleRobolectricTest {
 
   @Test
   fun `zip tar and sqlite helpers inspect and extract real files`() {
-    val tempRoot = File(System.getProperty("java.tmpdir") ?: System.getProperty("java.io.tmpdir"), "explored_arch_${System.nanoTime()}")
+    val tempRoot = File(System.getProperty("java.io.tmpdir") ?: System.getProperty("java.io.tmpdir"), "explored_arch_${System.nanoTime()}")
     tempRoot.mkdirs()
     try {
       // 1. ZIP viewer & extractor
@@ -424,7 +426,7 @@ class ExampleRobolectricTest {
 
   @Test
   fun `sqlite helper supports cell update row deletion and custom sql queries`() {
-    val tempRoot = File(System.getProperty("java.tmpdir"), "explored_sql_${System.nanoTime()}")
+    val tempRoot = File(System.getProperty("java.io.tmpdir"), "explored_sql_${System.nanoTime()}")
     tempRoot.mkdirs()
     try {
       val dbFile = File(tempRoot, "app.db")
@@ -456,7 +458,7 @@ class ExampleRobolectricTest {
   fun `writeTextFile creates bak backup when requested`() = runBlocking {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val manager = RootShellManager(scope)
-    val tempRoot = File(System.getProperty("java.tmpdir"), "explored_bak_${System.nanoTime()}")
+    val tempRoot = File(System.getProperty("java.io.tmpdir"), "explored_bak_${System.nanoTime()}")
     tempRoot.mkdirs()
     try {
       val cfg = File(tempRoot, "build.prop")
@@ -523,6 +525,208 @@ class ExampleRobolectricTest {
     composeTestRule.onNodeWithText("Mount R/W").assertIsDisplayed()
     composeTestRule.onNodeWithTag("apk_view_contents_button").assertIsDisplayed()
     composeTestRule.onNodeWithTag("apk_install_button").assertIsDisplayed()
+  }
+
+  @Test
+  fun `selection bottom bar shows permissions button for multi-selected system items and hides for user storage`() {
+    var batchClicked = false
+
+    composeTestRule.setContent {
+      ExploreDTheme {
+        androidx.compose.foundation.layout.Column {
+          SelectionBottomBar(
+            selectedCount = 3,
+            singleSelectedEntry = null,
+            allowPermissions = true,
+            onCopy = {},
+            onMove = {},
+            onPermissions = {},
+            onRename = {},
+            onDelete = {},
+            onSelectAll = {},
+            onClear = {},
+            onPermissionsSelected = { batchClicked = true },
+          )
+        }
+      }
+    }
+
+    composeTestRule.onNodeWithTag("sel_permissions_button").assertIsDisplayed().performClick()
+    composeTestRule.onNodeWithTag("sel_rename_button").assertDoesNotExist()
+    assertTrue(batchClicked)
+  }
+
+  @Test
+  fun `permissions dialog handles multi-selected directories with recursive no-exec child files 755 vs 644`() {
+    val entries = listOf(
+      FileEntry(
+        name = "app_dir",
+        path = "/system/priv-app/app_dir",
+        isDirectory = true,
+        permissionsSymbolic = "drwxr-xr-x",
+        permissionsOctal = "0755",
+        owner = "root",
+        group = "root",
+      ),
+      FileEntry(
+        name = "helper.sh",
+        path = "/system/priv-app/helper.sh",
+        isDirectory = false,
+        permissionsSymbolic = "-rw-r--r--",
+        permissionsOctal = "0644",
+        owner = "root",
+        group = "root",
+      ),
+    )
+
+    var appliedOctal = ""
+    var appliedRecursive = false
+    var appliedNoExec = false
+
+    composeTestRule.setContent {
+      ExploreDTheme {
+        PermissionsDialog(
+          entry = entries.first(),
+          isSuActive = false,
+          selectedEntries = entries,
+          onApply = { _, _, _ -> },
+          onApplyAdvanced = { octal, recursive, noExec, _, _ ->
+            appliedOctal = octal
+            appliedRecursive = recursive
+            appliedNoExec = noExec
+          },
+          onDismiss = {},
+        )
+      }
+    }
+
+    composeTestRule.onNodeWithTag("chmod_target_subtitle").assertTextContains("2 items selected")
+    composeTestRule.onNodeWithTag("chmod_preset_0755").performScrollTo().performClick()
+    composeTestRule.onNodeWithTag("chmod_no_exec_files_checkbox").performScrollTo().performClick()
+    composeTestRule.onNodeWithTag("chmod_no_exec_preview", useUnmergedTree = true)
+      .performScrollTo()
+      .assertTextContains("Dirs: 0755 (rwxr-xr-x) · Files: 0644 (rw-r--r--)")
+
+    composeTestRule.onNodeWithTag("chmod_apply_button").performClick()
+    assertEquals("0755", appliedOctal)
+    assertTrue(appliedRecursive)
+    assertTrue(appliedNoExec)
+  }
+
+  @Test
+  fun `changePermissions recursive with noExecOnChildFiles sets 0755 on dirs and 0644 on child files`() = runBlocking {
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val manager = RootShellManager(scope)
+    val tempRoot = File(System.getProperty("java.io.tmpdir"), "explored_chmod_${System.nanoTime()}")
+    val subDir = File(tempRoot, "nested")
+    subDir.mkdirs()
+    val childFile = File(subDir, "config.prop")
+    childFile.writeText("ro.test=1\n")
+
+    try {
+      // Pre-set child file to 0755 so stripping execute bits proves the split works
+      val initRes = manager.changePermissions(childFile.absolutePath, "0755", recursive = false, useSu = false)
+      assertTrue(initRes.success)
+      assertTrue(childFile.canExecute())
+
+      val batchRes = manager.changePermissions(
+        path = tempRoot.absolutePath,
+        octal = "0755",
+        recursive = true,
+        useSu = false,
+        noExecOnChildFiles = true,
+      )
+      assertTrue(batchRes.message, batchRes.success)
+      assertTrue(tempRoot.canExecute())
+      assertTrue(subDir.canExecute())
+      assertFalse(childFile.canExecute())
+      assertTrue(childFile.canRead())
+      assertTrue(childFile.canWrite())
+    } finally {
+      manager.close()
+      scope.cancel()
+      tempRoot.deleteRecursively()
+    }
+  }
+
+  @Test
+  fun `launch host shows app icon first then orbit loading screen then main content`() {
+    composeTestRule.mainClock.autoAdvance = false
+    composeTestRule.setContent {
+      ExploreDTheme {
+        ExploreDLaunchHost(
+          iconSplashDurationMs = 500L,
+          orbitLoadingDurationMs = 1000L,
+          mainContent = {
+            androidx.compose.material3.Text("Main Ready")
+          },
+        )
+      }
+    }
+
+    composeTestRule.mainClock.advanceTimeByFrame()
+    composeTestRule.onNodeWithTag("launch_icon_splash").assertIsDisplayed()
+    composeTestRule.onNodeWithText("Main Ready").assertDoesNotExist()
+
+    composeTestRule.mainClock.advanceTimeBy(800L)
+    composeTestRule.onNodeWithTag("launch_icon_splash").assertDoesNotExist()
+    composeTestRule.onNodeWithTag("orbit_loading_screen").assertIsDisplayed()
+
+    composeTestRule.mainClock.advanceTimeBy(1500L)
+    composeTestRule.onNodeWithTag("orbit_loading_screen").assertDoesNotExist()
+    composeTestRule.onNodeWithText("Main Ready").assertIsDisplayed()
+  }
+
+  @Test
+  fun `sqlite helper and shell manager edit and commit 0660 WAL database via writable temp copy`() = runBlocking {
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    val manager = RootShellManager(scope)
+    val tempRoot = File(System.getProperty("java.io.tmpdir"), "explored_mmssms_${System.nanoTime()}")
+    val srcDir = File(tempRoot, "telephony").apply { mkdirs() }
+    val cacheDir = File(tempRoot, "cache").apply { mkdirs() }
+    val dbFile = File(srcDir, "mmssms.db")
+    val tempCopy = File(cacheDir, "inspect_mmssms.db")
+
+    try {
+      SQLiteDatabase.openOrCreateDatabase(dbFile, null).use { db ->
+        db.enableWriteAheadLogging()
+        db.execSQL("CREATE TABLE sms (_id INTEGER PRIMARY KEY, body TEXT)")
+        db.execSQL("INSERT INTO sms (_id, body) VALUES (1, 'before_edit')")
+      }
+      assertTrue(manager.changePermissions(dbFile.absolutePath, "0660", recursive = false, useSu = false).success)
+
+      val prepRes = manager.copyReadableToTemp(dbFile.absolutePath, tempCopy, useSu = false)
+      assertTrue(prepRes.message, prepRes.success)
+      assertTrue(tempCopy.canRead())
+      assertTrue(tempCopy.canWrite())
+
+      val entry = FileEntry("mmssms.db", dbFile.absolutePath, isDirectory = false, permissionsOctal = "0660")
+      var info = ArchiveAndSqliteHelper.inspectSqliteDatabase(
+        entry = entry,
+        readableFile = tempCopy,
+        tempCopyPath = tempCopy.absolutePath,
+      )
+      assertNull(info.error)
+      assertEquals(listOf("1", "before_edit"), info.rows.first())
+
+      info = ArchiveAndSqliteHelper.updateSqliteCell(info, tempCopy, rowIndex = 0, columnIndex = 1, newValue = "after_edit")
+      assertNull(info.error)
+      assertTrue(info.hasPendingChanges)
+      assertEquals("after_edit", info.rows.first()[1])
+
+      ArchiveAndSqliteHelper.checkpointSqliteDatabase(tempCopy)
+      val commitRes = manager.writeFileFromLocalTemp(tempCopy, dbFile.absolutePath, useSu = false, createBackup = true)
+      assertTrue(commitRes.message, commitRes.success)
+      assertTrue(File(srcDir, "mmssms.db.bak").exists())
+
+      val reopened = ArchiveAndSqliteHelper.inspectSqliteDatabase(entry, dbFile, tempCopyPath = null)
+      assertNull(reopened.error)
+      assertEquals(listOf("1", "after_edit"), reopened.rows.first())
+    } finally {
+      manager.close()
+      scope.cancel()
+      tempRoot.deleteRecursively()
+    }
   }
 
   private fun buildSingleEntryTar(fileName: String, content: ByteArray): ByteArray {

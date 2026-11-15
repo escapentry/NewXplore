@@ -45,9 +45,10 @@ sealed interface PendingSystemAction {
   data class Paste(val clip: ClipboardState, val targetDir: String) : PendingSystemAction
   data class Delete(val paths: List<String>) : PendingSystemAction
   data class ApplyPermissions(
-    val entry: FileEntry,
+    val entries: List<FileEntry>,
     val octal: String,
     val recursive: Boolean,
+    val noExecOnChildFiles: Boolean,
     val ownerGroup: String?,
     val seLinuxContext: String?,
   ) : PendingSystemAction
@@ -96,6 +97,7 @@ data class ExploreDUiState(
   val pinDialogMode: PinDialogMode? = null,
   val pinError: String? = null,
   val permissionsTarget: FileEntry? = null,
+  val permissionsTargets: List<FileEntry> = emptyList(),
   val permissionsDetails: FilePropertiesDetails? = null,
   val textEditor: TextEditorState? = null,
   val archiveViewer: ArchiveViewerState? = null,
@@ -630,7 +632,7 @@ class ExploreDViewModel(application: Application) : AndroidViewModel(application
       }
     }
     is PendingSystemAction.Delete -> action.paths
-    is PendingSystemAction.ApplyPermissions -> listOf(action.entry.path)
+    is PendingSystemAction.ApplyPermissions -> action.entries.map { it.path }
     is PendingSystemAction.SaveText -> listOf(action.entry.path)
     is PendingSystemAction.ExtractArchive -> listOf(action.targetDir)
     is PendingSystemAction.CommitSqlite -> listOf(action.info.entry.path)
@@ -704,35 +706,89 @@ class ExploreDViewModel(application: Application) : AndroidViewModel(application
       }
 
       is PendingSystemAction.ApplyPermissions -> {
-        val res = shellManager.changePermissions(action.entry.path, action.octal, action.recursive, useSu)
-        val notes = mutableListOf<String>()
-        var isErr = !res.success
-        if (res.success) {
-          notes += "Mode ${action.octal}"
-          if (!action.ownerGroup.isNullOrBlank() && useSu &&
-            action.ownerGroup != "${action.entry.owner}:${action.entry.group}"
-          ) {
-            val chownRes = shellManager.changeOwnership(action.entry.path, action.ownerGroup, action.recursive)
-            if (!chownRes.success) {
-              notes += "chown failed: ${chownRes.message}"
-              isErr = true
+        val targets = action.entries
+        var successCount = 0
+        var lastError: String? = null
+        var chownSuccessCount = 0
+        var chownError: String? = null
+        var chconSuccessCount = 0
+        var chconError: String? = null
+
+        val isSingle = targets.size == 1
+        val initialSingleCtx = if (isSingle) {
+          _uiState.value.permissionsDetails?.seLinuxContext.orEmpty()
+        } else {
+          ""
+        }
+
+        for (target in targets) {
+          val res = shellManager.changePermissions(
+            path = target.path,
+            octal = action.octal,
+            recursive = action.recursive,
+            useSu = useSu,
+            noExecOnChildFiles = action.noExecOnChildFiles,
+          )
+          if (!res.success) {
+            lastError = res.message
+            continue
+          }
+          successCount++
+
+          val targetCurrentOwnerGroup = "${target.owner}:${target.group}"
+          val shouldChown = !action.ownerGroup.isNullOrBlank() && useSu &&
+            (!isSingle || action.ownerGroup != targetCurrentOwnerGroup)
+          if (shouldChown) {
+            val chownRes = shellManager.changeOwnership(target.path, action.ownerGroup!!, action.recursive)
+            if (chownRes.success) {
+              chownSuccessCount++
             } else {
-              notes += "Owner ${action.ownerGroup}"
+              chownError = chownRes.message
             }
           }
-          val initialCtx = _uiState.value.permissionsDetails?.seLinuxContext.orEmpty()
-          if (!action.seLinuxContext.isNullOrBlank() && useSu && action.seLinuxContext != initialCtx) {
-            val chconRes = shellManager.changeSeLinuxContext(action.entry.path, action.seLinuxContext, action.recursive)
-            if (!chconRes.success) {
-              notes += "chcon failed: ${chconRes.message}"
-              isErr = true
+
+          val shouldChcon = !action.seLinuxContext.isNullOrBlank() && useSu &&
+            (!isSingle || action.seLinuxContext != initialSingleCtx)
+          if (shouldChcon) {
+            val chconRes = shellManager.changeSeLinuxContext(target.path, action.seLinuxContext!!, action.recursive)
+            if (chconRes.success) {
+              chconSuccessCount++
             } else {
-              notes += "SELinux updated"
+              chconError = chconRes.message
             }
           }
         }
-        val finalMsg = if (notes.isEmpty()) res.message else notes.joinToString(" · ")
-        _uiState.update { it.copy(permissionsTarget = null, permissionsDetails = null) }
+
+        val notes = mutableListOf<String>()
+        val isErr = successCount == 0 || lastError != null || chownError != null || chconError != null
+        if (successCount > 0) {
+          val modeSummary = if (action.recursive && action.noExecOnChildFiles) {
+            val fileOctal = PermissionBits.fromOctal(action.octal)?.withoutExecuteBits()?.toOctalString() ?: action.octal
+            "Dirs ${action.octal} · Files $fileOctal"
+          } else {
+            "Mode ${action.octal}"
+          }
+          notes += if (targets.size > 1) "$modeSummary ($successCount/${targets.size})" else modeSummary
+        }
+        if (lastError != null) notes += lastError
+        if (chownSuccessCount > 0) notes += "Owner ${action.ownerGroup}"
+        if (chownError != null) notes += "chown failed: $chownError"
+        if (chconSuccessCount > 0) notes += "SELinux updated"
+        if (chconError != null) notes += "chcon failed: $chconError"
+
+        val finalMsg = if (notes.isEmpty()) "No items updated" else notes.joinToString(" · ")
+        _uiState.update { state ->
+          val clearedState = if (targets.size > 1) {
+            updateTab(state) { it.copy(selectedPaths = emptySet()) }
+          } else {
+            state
+          }
+          clearedState.copy(
+            permissionsTarget = null,
+            permissionsTargets = emptyList(),
+            permissionsDetails = null,
+          )
+        }
         setStatus(finalMsg, isError = isErr)
         refreshDirectory()
       }
@@ -764,8 +820,10 @@ class ExploreDViewModel(application: Application) : AndroidViewModel(application
           return
         }
         _uiState.update { it.copy(sqliteViewer = it.sqliteViewer?.copy(isSavingBack = true)) }
+        val tempFile = File(tempPath)
+        ArchiveAndSqliteHelper.checkpointSqliteDatabase(tempFile)
         val res = shellManager.writeFileFromLocalTemp(
-          tempFile = File(tempPath),
+          tempFile = tempFile,
           destPath = action.info.entry.path,
           useSu = useSu,
           createBackup = true,
@@ -886,13 +944,16 @@ class ExploreDViewModel(application: Application) : AndroidViewModel(application
     _uiState.update {
       it.copy(
         permissionsTarget = entry,
+        permissionsTargets = listOf(entry),
         permissionsDetails = FilePropertiesDetails(entry = entry, isLoading = true),
       )
     }
     viewModelScope.launch {
       val (seCtx, resolvedLink) = shellManager.getFileSecurityDetails(entry.path, _uiState.value.isSuActive)
       _uiState.update { state ->
-        if (state.permissionsTarget?.path != entry.path) return@update state
+        if (state.permissionsTarget?.path != entry.path || state.permissionsTargets.size > 1) {
+          return@update state
+        }
         state.copy(
           permissionsDetails = FilePropertiesDetails(
             entry = entry,
@@ -905,8 +966,38 @@ class ExploreDViewModel(application: Application) : AndroidViewModel(application
     }
   }
 
+  fun openPermissionsForSelection() {
+    val state = _uiState.value
+    val selected = state.selectedPaths
+    if (selected.isEmpty()) return
+    val entryMap = (state.visibleEntries + state.rawEntries).associateBy { it.path }
+    val selectedEntries = selected.mapNotNull { entryMap[it] }
+    if (selectedEntries.isEmpty()) return
+    if (selectedEntries.size == 1) {
+      openPermissionsEditor(selectedEntries.first())
+      return
+    }
+    if (selectedEntries.none { ExploreDParsers.isSystemPartitionPath(it.path, internalStorageRoot) }) {
+      setStatus("Permissions editor is only enabled on system partitions", isError = false)
+      return
+    }
+    _uiState.update {
+      it.copy(
+        permissionsTarget = selectedEntries.first(),
+        permissionsTargets = selectedEntries,
+        permissionsDetails = null,
+      )
+    }
+  }
+
   fun closePermissionsEditor() {
-    _uiState.update { it.copy(permissionsTarget = null, permissionsDetails = null) }
+    _uiState.update {
+      it.copy(
+        permissionsTarget = null,
+        permissionsTargets = emptyList(),
+        permissionsDetails = null,
+      )
+    }
   }
 
   fun applyPermissions(
@@ -915,11 +1006,43 @@ class ExploreDViewModel(application: Application) : AndroidViewModel(application
     recursive: Boolean,
     ownerGroup: String?,
     seLinuxContext: String? = null,
+    noExecOnChildFiles: Boolean = false,
   ) {
+    applyPermissionsBatch(
+      entries = listOf(entry),
+      octal = octal,
+      recursive = recursive,
+      noExecOnChildFiles = noExecOnChildFiles,
+      ownerGroup = ownerGroup,
+      seLinuxContext = seLinuxContext,
+    )
+  }
+
+  fun applyPermissionsBatch(
+    entries: List<FileEntry>,
+    octal: String,
+    recursive: Boolean,
+    noExecOnChildFiles: Boolean,
+    ownerGroup: String?,
+    seLinuxContext: String? = null,
+  ) {
+    if (entries.isEmpty()) return
+    val label = buildString {
+      append("Change permissions to $octal")
+      if (recursive && noExecOnChildFiles) append(" (no +x on files)")
+      if (entries.size > 1) append(" for ${entries.size} items")
+    }
     gateOrExecute(
-      "Change permissions to $octal",
-      listOf(entry.path),
-      PendingSystemAction.ApplyPermissions(entry, octal, recursive, ownerGroup, seLinuxContext),
+      label,
+      entries.map { it.path },
+      PendingSystemAction.ApplyPermissions(
+        entries = entries,
+        octal = octal,
+        recursive = recursive,
+        noExecOnChildFiles = noExecOnChildFiles,
+        ownerGroup = ownerGroup,
+        seLinuxContext = seLinuxContext,
+      ),
     )
   }
 
@@ -1210,7 +1333,12 @@ class ExploreDViewModel(application: Application) : AndroidViewModel(application
       val useSu = _uiState.value.isSuActive
       val localFile = resolveReadableLocalFile(entry, useSu, forceTempWhenSystem = true)
       if (localFile == null) {
-        setStatus("Unable to open ${entry.name}", isError = true)
+        val msg = if (!useSu && isPathProtected(entry.path)) {
+          "Unlock SU to open protected ${entry.name}"
+        } else {
+          "Unable to open ${entry.name}"
+        }
+        setStatus(msg, isError = true)
         return@launch
       }
       val info = ArchiveAndSqliteHelper.inspectSqliteDatabase(
@@ -1290,7 +1418,11 @@ class ExploreDViewModel(application: Application) : AndroidViewModel(application
     forceTempWhenSystem: Boolean = false,
   ): File? {
     val direct = File(entry.path)
-    val shouldUseDirect = direct.canRead() && (!forceTempWhenSystem || !isPathProtected(entry.path) || direct.canWrite())
+    val parentWritable = direct.parentFile?.canWrite() == true
+    val shouldUseDirect = direct.canRead() && (
+      !forceTempWhenSystem ||
+        (!isPathProtected(entry.path) && direct.canWrite() && parentWritable)
+      )
     if (shouldUseDirect) return direct
     val cacheFile = File(getApplication<Application>().cacheDir, "inspect_${System.nanoTime()}_${entry.name}")
     val res = shellManager.copyReadableToTemp(entry.path, cacheFile, useSu)

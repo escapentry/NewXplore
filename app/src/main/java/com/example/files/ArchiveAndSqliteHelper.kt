@@ -202,6 +202,39 @@ object ArchiveAndSqliteHelper {
     )
   }
 
+  fun checkpointSqliteDatabase(readableFile: File) {
+    if (!readableFile.exists() || !readableFile.canWrite()) return
+    runCatching {
+      SQLiteDatabase.openDatabase(
+        readableFile.absolutePath,
+        null,
+        SQLiteDatabase.OPEN_READWRITE,
+      ).use { db ->
+        checkpointOpenDb(db)
+      }
+    }
+  }
+
+  private fun openWritableDatabase(readableFile: File): SQLiteDatabase {
+    runCatching {
+      readableFile.setReadable(true, false)
+      readableFile.setWritable(true, true)
+    }
+    return SQLiteDatabase.openDatabase(
+      readableFile.absolutePath,
+      null,
+      SQLiteDatabase.OPEN_READWRITE,
+    )
+  }
+
+  private fun checkpointOpenDb(db: SQLiteDatabase) {
+    runCatching {
+      db.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", null).use { cursor ->
+        cursor.moveToFirst()
+      }
+    }
+  }
+
   fun inspectSqliteDatabase(
     entry: FileEntry,
     readableFile: File,
@@ -210,8 +243,9 @@ object ArchiveAndSqliteHelper {
     hasPendingChanges: Boolean = false,
   ): SqliteDatabaseInfo {
     return runCatching {
-      val openMode = if (readableFile.canWrite()) {
-        SQLiteDatabase.OPEN_READWRITE
+      val openMode = if (readableFile.canWrite() || tempCopyPath != null) {
+        runCatching { readableFile.setWritable(true, true) }
+        if (readableFile.canWrite()) SQLiteDatabase.OPEN_READWRITE else SQLiteDatabase.OPEN_READONLY
       } else {
         SQLiteDatabase.OPEN_READONLY
       }
@@ -220,6 +254,9 @@ object ArchiveAndSqliteHelper {
         null,
         openMode,
       ).use { db ->
+        if (openMode == SQLiteDatabase.OPEN_READWRITE) {
+          checkpointOpenDb(db)
+        }
         val tables = mutableListOf<String>()
         db.rawQuery(
           "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
@@ -336,15 +373,16 @@ object ArchiveAndSqliteHelper {
       upper.startsWith("WITH")
 
     return runCatching {
-      SQLiteDatabase.openDatabase(
-        readableFile.absolutePath,
-        null,
-        if (isQuery) SQLiteDatabase.OPEN_READONLY else SQLiteDatabase.OPEN_READWRITE,
-      ).use { db ->
+      val db = if (isQuery) {
+        SQLiteDatabase.openDatabase(readableFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+      } else {
+        openWritableDatabase(readableFile)
+      }
+      db.use { openedDb ->
         if (isQuery) {
           val columns = mutableListOf<String>()
           val rows = mutableListOf<List<String>>()
-          db.rawQuery(trimmed, null).use { cursor ->
+          openedDb.rawQuery(trimmed, null).use { cursor ->
             columns.addAll(cursor.columnNames)
             var count = 0
             while (cursor.moveToNext() && count < 300) {
@@ -367,7 +405,8 @@ object ArchiveAndSqliteHelper {
             queryResultMessage = "Query returned ${rows.size} row(s)",
           )
         } else {
-          db.execSQL(trimmed)
+          openedDb.execSQL(trimmed)
+          checkpointOpenDb(openedDb)
           val refreshed = inspectSqliteDatabase(
             entry = current.entry,
             readableFile = readableFile,
@@ -405,11 +444,7 @@ object ArchiveAndSqliteHelper {
     val rowId = current.rowIds.getOrNull(rowIndex)
 
     return runCatching {
-      SQLiteDatabase.openDatabase(
-        readableFile.absolutePath,
-        null,
-        SQLiteDatabase.OPEN_READWRITE,
-      ).use { db ->
+      openWritableDatabase(readableFile).use { db ->
         if (current.hasRowId && rowId != null) {
           if (newValue == null) {
             db.execSQL("UPDATE \"$escapedTable\" SET \"$escapedCol\" = NULL WHERE rowid = ?", arrayOf<Any>(rowId))
@@ -435,6 +470,7 @@ object ArchiveAndSqliteHelper {
           val whereClause = whereParts.joinToString(" AND ").ifEmpty { error("Cannot identify row without rowid") }
           db.execSQL("UPDATE \"$escapedTable\" SET $setClause WHERE $whereClause", args.toTypedArray())
         }
+        checkpointOpenDb(db)
       }
       inspectSqliteDatabase(
         entry = current.entry,
@@ -461,11 +497,7 @@ object ArchiveAndSqliteHelper {
     val rowId = current.rowIds.getOrNull(rowIndex)
 
     return runCatching {
-      SQLiteDatabase.openDatabase(
-        readableFile.absolutePath,
-        null,
-        SQLiteDatabase.OPEN_READWRITE,
-      ).use { db ->
+      openWritableDatabase(readableFile).use { db ->
         if (current.hasRowId && rowId != null) {
           db.execSQL("DELETE FROM \"$escapedTable\" WHERE rowid = ?", arrayOf<Any>(rowId))
         } else {
@@ -485,6 +517,7 @@ object ArchiveAndSqliteHelper {
           val whereClause = whereParts.joinToString(" AND ").ifEmpty { error("Cannot delete row without rowid") }
           db.execSQL("DELETE FROM \"$escapedTable\" WHERE $whereClause", args.toTypedArray())
         }
+        checkpointOpenDb(db)
       }
       inspectSqliteDatabase(
         entry = current.entry,

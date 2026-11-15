@@ -440,13 +440,25 @@ class RootShellManager(
     octal: String,
     recursive: Boolean,
     useSu: Boolean,
+    noExecOnChildFiles: Boolean = false,
   ): ShellOpResult = withContext(Dispatchers.IO) {
     val cleanOctal = octal.trim()
-    if (PermissionBits.fromOctal(cleanOctal) == null) {
-      return@withContext ShellOpResult(false, "Invalid octal mode: $octal")
+    val parsed = PermissionBits.fromOctal(cleanOctal)
+      ?: return@withContext ShellOpResult(false, "Invalid octal mode: $octal")
+    val qPath = shellQuote(path)
+    if (recursive && noExecOnChildFiles) {
+      val fileOctal = parsed.withoutExecuteBits().toOctalString()
+      val cmd = """
+        if [ -d $qPath ]; then
+          chmod $cleanOctal $qPath && find $qPath -type d -exec chmod $cleanOctal {} \; && find $qPath -type f -exec chmod $fileOctal {} \;
+        else
+          chmod $fileOctal $qPath
+        fi
+      """.trimIndent()
+      return@withContext execWriteCommand(cmd, useSu, "Dirs $cleanOctal · Files $fileOctal")
     }
     val flag = if (recursive) "-R " else ""
-    val cmd = "chmod $flag$cleanOctal ${shellQuote(path)}"
+    val cmd = "chmod $flag$cleanOctal $qPath"
     execWriteCommand(cmd, useSu, "Permissions set to $cleanOctal")
   }
 
@@ -674,7 +686,7 @@ class RootShellManager(
       if [ -n "${'$'}__EXP_MODE" ]; then chmod "${'$'}__EXP_MODE" $qTmp 2>/dev/null; fi
       if [ -n "${'$'}__EXP_OWNER" ]; then chown "${'$'}__EXP_OWNER" $qTmp 2>/dev/null; fi
       if [ -n "${'$'}__EXP_CTX" ] && [ "${'$'}__EXP_CTX" != "?" ]; then chcon "${'$'}__EXP_CTX" $qTmp 2>/dev/null; fi
-      mv -f $qTmp $qDest && rm -f ${shellQuote("$destPath-wal")} ${shellQuote("$destPath-shm")}
+      mv -f $qTmp $qDest && rm -f ${shellQuote("$destPath-wal")} ${shellQuote("$destPath-shm")} ${shellQuote("$destPath-journal")}
     """.trimIndent()
     execWriteCommand(cmd, useSu, "Committed changes to ${File(destPath).name}")
   }
@@ -706,15 +718,66 @@ class RootShellManager(
   ): ShellOpResult = withContext(Dispatchers.IO) {
     tempFile.parentFile?.mkdirs()
     val src = File(sourcePath)
+    val tempParent = tempFile.parentFile
+    val sidecarSuffixes = listOf("-wal", "-shm", "-journal")
     if (!useSu && src.canRead()) {
       val ok = runCatching {
         src.copyTo(tempFile, overwrite = true)
+        tempFile.setReadable(true, false)
+        tempFile.setWritable(true, true)
+        for (suffix in sidecarSuffixes) {
+          val sidecarSrc = File("$sourcePath$suffix")
+          val sidecarDst = File("${tempFile.absolutePath}$suffix")
+          if (sidecarSrc.exists() && sidecarSrc.canRead()) {
+            sidecarSrc.copyTo(sidecarDst, overwrite = true)
+            sidecarDst.setReadable(true, false)
+            sidecarDst.setWritable(true, true)
+          } else if (sidecarDst.exists()) {
+            sidecarDst.delete()
+          }
+        }
         true
       }.getOrDefault(false)
       if (ok) return@withContext ShellOpResult(true, "Ready")
     }
-    val cmd = "cp -f ${shellQuote(sourcePath)} ${shellQuote(tempFile.absolutePath)} && chmod 0644 ${shellQuote(tempFile.absolutePath)}"
-    execWriteCommand(cmd, useSu, "Prepared local copy")
+
+    runCatching {
+      if (!tempFile.exists()) tempFile.createNewFile()
+      tempFile.setReadable(true, true)
+      tempFile.setWritable(true, true)
+    }
+
+    val qSrc = shellQuote(sourcePath)
+    val qTmp = shellQuote(tempFile.absolutePath)
+    val qParent = shellQuote(tempParent?.absolutePath ?: "/data/local/tmp")
+    val sidecarSnippets = sidecarSuffixes.joinToString("\n") { suffix ->
+      val qSideSrc = shellQuote("$sourcePath$suffix")
+      val qSideTmp = shellQuote("${tempFile.absolutePath}$suffix")
+      """
+        if [ -e $qSideSrc ]; then
+          cat $qSideSrc > $qSideTmp 2>/dev/null || cp -f $qSideSrc $qSideTmp
+          if [ -n "${'$'}__EXP_APP_OWNER" ]; then chown "${'$'}__EXP_APP_OWNER" $qSideTmp 2>/dev/null; fi
+          chmod 0666 $qSideTmp 2>/dev/null || chmod 0660 $qSideTmp 2>/dev/null || true
+        else
+          rm -f $qSideTmp 2>/dev/null || true
+        fi
+      """.trimIndent()
+    }
+    val cmd = """
+      __EXP_APP_OWNER=$(stat -c '%u:%g' $qParent 2>/dev/null)
+      cat $qSrc > $qTmp || cp -f $qSrc $qTmp || exit 1
+      if [ -n "${'$'}__EXP_APP_OWNER" ]; then chown "${'$'}__EXP_APP_OWNER" $qTmp 2>/dev/null; fi
+      chmod 0666 $qTmp 2>/dev/null || chmod 0660 $qTmp 2>/dev/null || exit 1
+      $sidecarSnippets
+    """.trimIndent()
+    val res = execWriteCommand(cmd, useSu, "Prepared local copy")
+    if (res.success) {
+      runCatching {
+        tempFile.setReadable(true, false)
+        tempFile.setWritable(true, true)
+      }
+    }
+    res
   }
 
   suspend fun copyDirContents(

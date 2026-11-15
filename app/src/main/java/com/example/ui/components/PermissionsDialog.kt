@@ -79,25 +79,56 @@ fun PermissionsDialog(
   onDismiss: () -> Unit,
   details: FilePropertiesDetails? = null,
   onApplyWithSeLinux: ((octal: String, recursive: Boolean, ownerGroup: String?, seLinuxContext: String?) -> Unit)? = null,
+  selectedEntries: List<FileEntry> = listOf(entry),
+  onApplyAdvanced: ((octal: String, recursive: Boolean, noExecOnChildFiles: Boolean, ownerGroup: String?, seLinuxContext: String?) -> Unit)? = null,
 ) {
-  val initialBits = remember(entry.path) {
-    PermissionBits.fromOctal(entry.permissionsOctal)
-      ?: PermissionBits.fromSymbolic(entry.permissionsSymbolic)
+  val targets = remember(entry, selectedEntries) {
+    selectedEntries.ifEmpty { listOf(entry) }
   }
-  var bits by remember(entry.path) { mutableStateOf(initialBits) }
-  var octalText by remember(entry.path) { mutableStateOf(initialBits.toOctalString()) }
-  var recursive by remember(entry.path) { mutableStateOf(false) }
+  val isMulti = targets.size > 1
+  val hasDirectories = remember(targets) { targets.any { it.isDirectory } }
+  val selectionKey = remember(targets) { targets.joinToString("|") { it.path } }
 
-  var ownerText by remember(entry.path) { mutableStateOf(entry.owner) }
-  var groupText by remember(entry.path) { mutableStateOf(entry.group) }
+  val initialBits = remember(selectionKey) {
+    val distinctOctals = targets.map { it.permissionsOctal }.distinct()
+    when {
+      distinctOctals.size == 1 ->
+        PermissionBits.fromOctal(distinctOctals.first())
+          ?: PermissionBits.fromSymbolic(targets.first().permissionsSymbolic)
+      hasDirectories -> PermissionBits.fromOctal("0755")!!
+      else ->
+        PermissionBits.fromOctal(entry.permissionsOctal)
+          ?: PermissionBits.fromSymbolic(entry.permissionsSymbolic)
+    }
+  }
+  var bits by remember(selectionKey) { mutableStateOf(initialBits) }
+  var octalText by remember(selectionKey) { mutableStateOf(initialBits.toOctalString()) }
+  var recursive by remember(selectionKey) { mutableStateOf(false) }
+  var noExecOnChildFiles by remember(selectionKey) { mutableStateOf(false) }
+
+  val sharedOwner = remember(selectionKey) {
+    val owners = targets.map { it.owner.trim() }.filter { it.isNotEmpty() }.distinct()
+    if (owners.size == 1) owners.first() else ""
+  }
+  val sharedGroup = remember(selectionKey) {
+    val groups = targets.map { it.group.trim() }.filter { it.isNotEmpty() }.distinct()
+    if (groups.size == 1) groups.first() else ""
+  }
+
+  var ownerText by remember(selectionKey) { mutableStateOf(if (isMulti) sharedOwner else entry.owner) }
+  var groupText by remember(selectionKey) { mutableStateOf(if (isMulti) sharedGroup else entry.group) }
   var ownerDropdownExpanded by remember { mutableStateOf(false) }
   var groupDropdownExpanded by remember { mutableStateOf(false) }
 
-  var seLinuxText by remember(entry.path) { mutableStateOf(details?.seLinuxContext ?: entry.seLinuxContext) }
-  LaunchedEffect(details?.seLinuxContext) {
-    val fetched = details?.seLinuxContext
-    if (!fetched.isNullOrBlank()) {
-      seLinuxText = fetched
+  var seLinuxText by remember(selectionKey) {
+    mutableStateOf(if (isMulti) "" else (details?.seLinuxContext ?: entry.seLinuxContext))
+  }
+  LaunchedEffect(details?.seLinuxContext, isMulti) {
+    if (!isMulti) {
+      val fetched = details?.seLinuxContext
+      if (!fetched.isNullOrBlank()) {
+        seLinuxText = fetched
+      }
     }
   }
 
@@ -127,11 +158,12 @@ fun PermissionsDialog(
           fontWeight = FontWeight.SemiBold,
         )
         Text(
-          text = entry.name,
+          text = if (isMulti) "${targets.size} items selected" else entry.name,
           style = MaterialTheme.typography.bodyMedium,
           color = MaterialTheme.colorScheme.primary,
           maxLines = 1,
           overflow = TextOverflow.Ellipsis,
+          modifier = Modifier.testTag("chmod_target_subtitle"),
         )
 
         Column(
@@ -152,25 +184,46 @@ fun PermissionsDialog(
                 .padding(10.dp),
               verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {
-              Text(
-                text = "Path: ${entry.path}",
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-              )
-              val kindLabel = when {
-                entry.isSymlink -> "Symlink → ${details?.resolvedLinkTarget ?: entry.symlinkTarget ?: "?"}"
-                entry.isDirectory -> "Directory"
-                else -> "File · ${ExploreDParsers.formatBytes(entry.sizeBytes)}"
+              if (isMulti) {
+                val dirCount = targets.count { it.isDirectory }
+                val fileCount = targets.size - dirCount
+                val namesPreview = targets.take(4).joinToString(", ") { it.name } +
+                  if (targets.size > 4) " (+${targets.size - 4} more)" else ""
+                Text(
+                  text = "Items: $namesPreview",
+                  style = MaterialTheme.typography.labelSmall,
+                  fontFamily = FontFamily.Monospace,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  maxLines = 2,
+                  overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                  text = "$dirCount folder(s) · $fileCount file(s)",
+                  style = MaterialTheme.typography.labelSmall,
+                  fontFamily = FontFamily.Monospace,
+                  color = MaterialTheme.colorScheme.onSurface,
+                )
+              } else {
+                Text(
+                  text = "Path: ${entry.path}",
+                  style = MaterialTheme.typography.labelSmall,
+                  fontFamily = FontFamily.Monospace,
+                  color = MaterialTheme.colorScheme.onSurfaceVariant,
+                  maxLines = 2,
+                  overflow = TextOverflow.Ellipsis,
+                )
+                val kindLabel = when {
+                  entry.isSymlink -> "Symlink → ${details?.resolvedLinkTarget ?: entry.symlinkTarget ?: "?"}"
+                  entry.isDirectory -> "Directory"
+                  else -> "File · ${ExploreDParsers.formatBytes(entry.sizeBytes)}"
+                }
+                Text(
+                  text = "$kindLabel${if (entry.modifiedDisplay.isNotBlank()) " · ${entry.modifiedDisplay}" else ""}",
+                  style = MaterialTheme.typography.labelSmall,
+                  fontFamily = FontFamily.Monospace,
+                  color = MaterialTheme.colorScheme.onSurface,
+                )
               }
-              Text(
-                text = "$kindLabel${if (entry.modifiedDisplay.isNotBlank()) " · ${entry.modifiedDisplay}" else ""}",
-                style = MaterialTheme.typography.labelSmall,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurface,
-              )
             }
           }
 
@@ -319,24 +372,91 @@ fun PermissionsDialog(
             )
           }
 
-          if (entry.isDirectory) {
-            Row(
-              modifier = Modifier
-                .fillMaxWidth()
-                .clickable { recursive = !recursive }
-                .padding(vertical = 2.dp),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.SpaceBetween,
+          if (hasDirectories) {
+            Surface(
+              shape = RoundedCornerShape(14.dp),
+              color = MaterialTheme.colorScheme.surface,
+              border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
             ) {
-              Text(
-                text = "Apply recursively (-R)",
-                style = MaterialTheme.typography.bodyMedium,
-              )
-              Switch(
-                checked = recursive,
-                onCheckedChange = { recursive = it },
-                modifier = Modifier.testTag("chmod_recursive_switch"),
-              )
+              Column(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+              ) {
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                      val next = !recursive
+                      recursive = next
+                      if (!next) noExecOnChildFiles = false
+                    }
+                    .padding(vertical = 2.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                  Text(
+                    text = "Apply recursively (-R)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                  )
+                  Switch(
+                    checked = recursive,
+                    onCheckedChange = { next ->
+                      recursive = next
+                      if (!next) noExecOnChildFiles = false
+                    },
+                    modifier = Modifier.testTag("chmod_recursive_switch"),
+                  )
+                }
+
+                Row(
+                  modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                      val next = !noExecOnChildFiles
+                      noExecOnChildFiles = next
+                      if (next) recursive = true
+                    }
+                    .padding(vertical = 2.dp),
+                  verticalAlignment = Alignment.CenterVertically,
+                  horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                  Checkbox(
+                    checked = noExecOnChildFiles,
+                    onCheckedChange = { next ->
+                      noExecOnChildFiles = next
+                      if (next) recursive = true
+                    },
+                    colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary),
+                    modifier = Modifier.testTag("chmod_no_exec_files_checkbox"),
+                  )
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                      text = "Never set execute on child files",
+                      style = MaterialTheme.typography.bodyMedium,
+                    )
+                    val filePreviewBits = bits.withoutExecuteBits()
+                    val subLabel = if (recursive && noExecOnChildFiles) {
+                      "Dirs: ${bits.toOctalString()} (${bits.toSymbolicString()}) · Files: ${filePreviewBits.toOctalString()} (${filePreviewBits.toSymbolicString()})"
+                    } else {
+                      "Keeps dirs ${bits.toOctalString()} while stripping +x on files (${filePreviewBits.toOctalString()})"
+                    }
+                    Text(
+                      text = subLabel,
+                      style = MaterialTheme.typography.labelSmall,
+                      fontFamily = FontFamily.Monospace,
+                      color = if (recursive && noExecOnChildFiles) {
+                        MaterialTheme.colorScheme.tertiary
+                      } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                      },
+                      modifier = Modifier.testTag("chmod_no_exec_preview"),
+                    )
+                  }
+                }
+              }
             }
           }
 
@@ -351,6 +471,9 @@ fun PermissionsDialog(
                   value = ownerText,
                   onValueChange = { ownerText = it },
                   label = { Text("Owner / UID") },
+                  placeholder = if (isMulti && ownerText.isEmpty()) {
+                    { Text("unchanged") }
+                  } else null,
                   singleLine = true,
                   trailingIcon = {
                     IconButton(onClick = { ownerDropdownExpanded = true }) {
@@ -382,6 +505,9 @@ fun PermissionsDialog(
                   value = groupText,
                   onValueChange = { groupText = it },
                   label = { Text("Group / GID") },
+                  placeholder = if (isMulti && groupText.isEmpty()) {
+                    { Text("unchanged") }
+                  } else null,
                   singleLine = true,
                   trailingIcon = {
                     IconButton(onClick = { groupDropdownExpanded = true }) {
@@ -456,16 +582,23 @@ fun PermissionsDialog(
             enabled = isOctalValid,
             onClick = {
               val finalOctal = if (octalText.length == 3) "0$octalText" else octalText
-              val combinedOwner = if (ownerText.isNotBlank() && groupText.isNotBlank()) {
-                "${ownerText.trim()}:${groupText.trim()}"
-              } else {
-                ownerText.trim().takeIf { it.isNotEmpty() }
+              val cleanOwner = ownerText.trim()
+              val cleanGroup = groupText.trim()
+              val combinedOwner = when {
+                cleanOwner.isNotEmpty() && cleanGroup.isNotEmpty() -> "$cleanOwner:$cleanGroup"
+                cleanOwner.isNotEmpty() -> cleanOwner
+                cleanGroup.isNotEmpty() -> ":$cleanGroup"
+                else -> null
               }
               val cleanCtx = seLinuxText.trim().takeIf { it.isNotEmpty() }
-              if (onApplyWithSeLinux != null) {
-                onApplyWithSeLinux(finalOctal, recursive, combinedOwner, cleanCtx)
-              } else {
-                onApply(finalOctal, recursive, combinedOwner)
+              val effectiveNoExec = hasDirectories && recursive && noExecOnChildFiles
+              when {
+                onApplyAdvanced != null ->
+                  onApplyAdvanced(finalOctal, recursive, effectiveNoExec, combinedOwner, cleanCtx)
+                onApplyWithSeLinux != null ->
+                  onApplyWithSeLinux(finalOctal, recursive, combinedOwner, cleanCtx)
+                else ->
+                  onApply(finalOctal, recursive, combinedOwner)
               }
             },
             colors = ButtonDefaults.buttonColors(

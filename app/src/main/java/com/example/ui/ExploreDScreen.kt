@@ -333,6 +333,7 @@ fun ExploreDScreen(
           onCopy = { viewModel.stageClipboard(ClipboardMode.COPY) },
           onMove = { viewModel.stageClipboard(ClipboardMode.MOVE) },
           onPermissions = { entry -> viewModel.openPermissionsEditor(entry) },
+          onPermissionsSelected = viewModel::openPermissionsForSelection,
           onRename = { entry -> renameTarget = entry },
           onDelete = { deleteTargets = state.selectedPaths.toList() },
           onSelectAll = viewModel::selectAllVisible,
@@ -369,15 +370,20 @@ fun ExploreDScreen(
   }
 
   state.permissionsTarget?.let { target ->
+    val targets = state.permissionsTargets.ifEmpty { listOf(target) }
     PermissionsDialog(
       entry = target,
       isSuActive = state.isSuActive,
       details = state.permissionsDetails,
+      selectedEntries = targets,
       onApply = { octal, recursive, ownerGroup ->
-        viewModel.applyPermissions(target, octal, recursive, ownerGroup, null)
+        viewModel.applyPermissionsBatch(targets, octal, recursive, false, ownerGroup, null)
       },
       onApplyWithSeLinux = { octal, recursive, ownerGroup, seCtx ->
-        viewModel.applyPermissions(target, octal, recursive, ownerGroup, seCtx)
+        viewModel.applyPermissionsBatch(targets, octal, recursive, false, ownerGroup, seCtx)
+      },
+      onApplyAdvanced = { octal, recursive, noExecChildFiles, ownerGroup, seCtx ->
+        viewModel.applyPermissionsBatch(targets, octal, recursive, noExecChildFiles, ownerGroup, seCtx)
       },
       onDismiss = viewModel::closePermissionsEditor,
     )
