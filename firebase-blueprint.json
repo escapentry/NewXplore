@@ -1,0 +1,222 @@
+{
+  "entities": {
+    "Note": {
+      "title": "Note",
+      "description": "A user-authored rich text note with color tag and pin state.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase UID of the note owner."
+        },
+        "title": {
+          "type": "string",
+          "description": "Note title (0-160 chars; at least one of title or content must be non-empty)."
+        },
+        "content": {
+          "type": "string",
+          "description": "Note body content (0-20000 chars)."
+        },
+        "colorTag": {
+          "type": "string",
+          "enum": ["obsidian", "cyan", "indigo", "mint", "coral"],
+          "description": "Visual accent tag for the note card."
+        },
+        "pinned": {
+          "type": "boolean",
+          "description": "Whether the note is pinned to the top of the list."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp (written via FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-updated timestamp (written via FieldValue.serverTimestamp())."
+        }
+      },
+      "required": ["userId", "title", "content", "colorTag", "pinned", "createdAt", "updatedAt"]
+    },
+    "CalendarEvent": {
+      "title": "CalendarEvent",
+      "description": "A calendar event scheduled on a specific ISO date for the authenticated user.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase UID of the event owner."
+        },
+        "title": {
+          "type": "string",
+          "description": "Event title (1-140 chars)."
+        },
+        "description": {
+          "type": "string",
+          "description": "Optional event notes or location details (0-1000 chars)."
+        },
+        "dateIso": {
+          "type": "string",
+          "description": "Event date in YYYY-MM-DD format."
+        },
+        "startTimeMinutes": {
+          "type": "integer",
+          "description": "Start time in minutes from midnight (0-1439), or -1 for all-day."
+        },
+        "endTimeMinutes": {
+          "type": "integer",
+          "description": "End time in minutes from midnight (0-1439), or -1 for all-day."
+        },
+        "category": {
+          "type": "string",
+          "enum": ["personal", "work", "health", "reminder"],
+          "description": "Category accent for calendar badges."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp (written via FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-updated timestamp (written via FieldValue.serverTimestamp())."
+        }
+      },
+      "required": ["userId", "title", "description", "dateIso", "startTimeMinutes", "endTimeMinutes", "category", "createdAt", "updatedAt"]
+    },
+    "AlarmEntry": {
+      "title": "AlarmEntry",
+      "description": "A user-configured alarm with time, label, repeat weekdays, and enabled toggle.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase UID of the alarm owner."
+        },
+        "hour": {
+          "type": "integer",
+          "description": "Alarm hour in 24-hour clock (0-23)."
+        },
+        "minute": {
+          "type": "integer",
+          "description": "Alarm minute (0-59)."
+        },
+        "label": {
+          "type": "string",
+          "description": "Alarm label (0-80 chars)."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the alarm is currently armed."
+        },
+        "repeatDays": {
+          "type": "array",
+          "description": "Bounded list (max 7) of ISO weekday integers (1=Mon..7=Sun)."
+        },
+        "vibrate": {
+          "type": "boolean",
+          "description": "Whether vibration is enabled for the alarm."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp (written via FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-updated timestamp (written via FieldValue.serverTimestamp())."
+        }
+      },
+      "required": ["userId", "hour", "minute", "label", "enabled", "repeatDays", "vibrate", "createdAt", "updatedAt"]
+    },
+    "WorldClockEntry": {
+      "title": "WorldClockEntry",
+      "description": "A saved city timezone displayed in the user's World Clock dashboard.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase UID of the owner."
+        },
+        "zoneId": {
+          "type": "string",
+          "description": "Java/IANA TimeZone ID (e.g., America/New_York)."
+        },
+        "cityLabel": {
+          "type": "string",
+          "description": "Display city name (1-80 chars)."
+        },
+        "sortOrder": {
+          "type": "integer",
+          "description": "User ordering index (0-10000)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp (written via FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-updated timestamp (written via FieldValue.serverTimestamp())."
+        }
+      },
+      "required": ["userId", "zoneId", "cityLabel", "sortOrder", "createdAt", "updatedAt"]
+    },
+    "CalcHistoryEntry": {
+      "title": "CalcHistoryEntry",
+      "description": "A saved calculator expression and evaluated result.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Authenticated Firebase UID of the owner."
+        },
+        "expression": {
+          "type": "string",
+          "description": "Evaluated arithmetic expression (1-160 chars)."
+        },
+        "result": {
+          "type": "string",
+          "description": "Formatted calculation result (1-64 chars)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp (written via FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server last-updated timestamp (written via FieldValue.serverTimestamp())."
+        }
+      },
+      "required": ["userId", "expression", "result", "createdAt", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/notes/{noteId}": {
+      "schema": { "$ref": "#/entities/Note" },
+      "description": "User-scoped notes collection."
+    },
+    "/users/{userId}/events/{eventId}": {
+      "schema": { "$ref": "#/entities/CalendarEvent" },
+      "description": "User-scoped calendar events collection."
+    },
+    "/users/{userId}/alarms/{alarmId}": {
+      "schema": { "$ref": "#/entities/AlarmEntry" },
+      "description": "User-scoped alarms collection."
+    },
+    "/users/{userId}/worldClocks/{clockId}": {
+      "schema": { "$ref": "#/entities/WorldClockEntry" },
+      "description": "User-scoped saved world clock cities."
+    },
+    "/users/{userId}/calcHistory/{entryId}": {
+      "schema": { "$ref": "#/entities/CalcHistoryEntry" },
+      "description": "User-scoped calculator history entries."
+    }
+  }
+}

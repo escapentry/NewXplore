@@ -1,0 +1,8 @@
+{
+  "name": "ExploreD",
+  "description": "Fast Obsidian-themed Android root and internal file manager with PIN-protected su elevation, bidirectional chmod permissions editor, and partition mount manager.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

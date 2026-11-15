@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">ExploreD</string>
+    <string name="files_permission_prompt">Internal storage access is required to manage files without su.</string>
+    <string name="grant_files_permission">Grant access</string>
+    <string name="dismiss">Dismiss</string>
+    <string name="search_hint">Filter current folder…</string>
+</resources>

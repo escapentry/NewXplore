@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.MyApplication" parent="android:Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowBackground">@drawable/explored_window_splash</item>
+        <item name="android:windowSplashScreenBackground">@color/explored_splash_bg</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/img_explored_icon_fg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+</resources>

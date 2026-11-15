@@ -1,0 +1,180 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidNote(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.title is string && data.title.size() <= 160 &&
+             data.content is string && data.content.size() <= 20000 &&
+             (data.title.size() > 0 || data.content.size() > 0) &&
+             data.colorTag is string && data.colorTag in ['obsidian', 'cyan', 'indigo', 'mint', 'coral'] &&
+             data.pinned is bool;
+    }
+
+    function isValidCalendarEvent(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.title is string && data.title.size() >= 1 && data.title.size() <= 140 &&
+             data.description is string && data.description.size() <= 1000 &&
+             data.dateIso is string && data.dateIso.size() == 10 && data.dateIso.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
+             data.startTimeMinutes is int && data.startTimeMinutes >= -1 && data.startTimeMinutes <= 1439 &&
+             data.endTimeMinutes is int && data.endTimeMinutes >= -1 && data.endTimeMinutes <= 1439 &&
+             data.category is string && data.category in ['personal', 'work', 'health', 'reminder'];
+    }
+
+    function isValidAlarm(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.hour is int && data.hour >= 0 && data.hour <= 23 &&
+             data.minute is int && data.minute >= 0 && data.minute <= 59 &&
+             data.label is string && data.label.size() <= 80 &&
+             data.enabled is bool &&
+             data.repeatDays is list && data.repeatDays.size() <= 7 &&
+             (data.repeatDays.size() == 0 || (data.repeatDays[0] is int && data.repeatDays[0] >= 1 && data.repeatDays[0] <= 7)) &&
+             data.vibrate is bool;
+    }
+
+    function isValidWorldClock(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.zoneId is string && data.zoneId.size() >= 1 && data.zoneId.size() <= 64 &&
+             data.cityLabel is string && data.cityLabel.size() >= 1 && data.cityLabel.size() <= 80 &&
+             data.sortOrder is int && data.sortOrder >= 0 && data.sortOrder <= 10000;
+    }
+
+    function isValidCalcHistory(data) {
+      return data.userId is string && data.userId == request.auth.uid &&
+             data.expression is string && data.expression.size() >= 1 && data.expression.size() <= 160 &&
+             data.result is string && data.result.size() >= 1 && data.result.size() <= 64;
+    }
+
+    match /users/{userId} {
+      match /notes/{noteId} {
+        allow get: if isSignedIn() && request.auth.uid == userId && isValidId(noteId);
+        allow list: if isSignedIn() && request.auth.uid == userId;
+        allow create: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(noteId) &&
+                         incoming().keys().hasAll(['userId', 'title', 'content', 'colorTag', 'pinned', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'title', 'content', 'colorTag', 'pinned', 'createdAt', 'updatedAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidNote(incoming());
+        allow update: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(noteId) &&
+                         isValidNote(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly(['pinned', 'updatedAt']) ||
+                           incoming().diff(existing()).affectedKeys().hasOnly(['title', 'content', 'colorTag', 'pinned', 'updatedAt'])
+                         );
+        allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(noteId);
+      }
+
+      match /events/{eventId} {
+        allow get: if isSignedIn() && request.auth.uid == userId && isValidId(eventId);
+        allow list: if isSignedIn() && request.auth.uid == userId;
+        allow create: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(eventId) &&
+                         incoming().keys().hasAll(['userId', 'title', 'description', 'dateIso', 'startTimeMinutes', 'endTimeMinutes', 'category', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'title', 'description', 'dateIso', 'startTimeMinutes', 'endTimeMinutes', 'category', 'createdAt', 'updatedAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidCalendarEvent(incoming());
+        allow update: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(eventId) &&
+                         isValidCalendarEvent(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['title', 'description', 'dateIso', 'startTimeMinutes', 'endTimeMinutes', 'category', 'updatedAt']);
+        allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(eventId);
+      }
+
+      match /alarms/{alarmId} {
+        allow get: if isSignedIn() && request.auth.uid == userId && isValidId(alarmId);
+        allow list: if isSignedIn() && request.auth.uid == userId;
+        allow create: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(alarmId) &&
+                         incoming().keys().hasAll(['userId', 'hour', 'minute', 'label', 'enabled', 'repeatDays', 'vibrate', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'hour', 'minute', 'label', 'enabled', 'repeatDays', 'vibrate', 'createdAt', 'updatedAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidAlarm(incoming());
+        allow update: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(alarmId) &&
+                         isValidAlarm(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly(['enabled', 'updatedAt']) ||
+                           incoming().diff(existing()).affectedKeys().hasOnly(['hour', 'minute', 'label', 'enabled', 'repeatDays', 'vibrate', 'updatedAt'])
+                         );
+        allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(alarmId);
+      }
+
+      match /worldClocks/{clockId} {
+        allow get: if isSignedIn() && request.auth.uid == userId && isValidId(clockId);
+        allow list: if isSignedIn() && request.auth.uid == userId;
+        allow create: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(clockId) &&
+                         incoming().keys().hasAll(['userId', 'zoneId', 'cityLabel', 'sortOrder', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'zoneId', 'cityLabel', 'sortOrder', 'createdAt', 'updatedAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidWorldClock(incoming());
+        allow update: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(clockId) &&
+                         isValidWorldClock(incoming()) &&
+                         incoming().userId == existing().userId &&
+                         incoming().createdAt == existing().createdAt &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['zoneId', 'cityLabel', 'sortOrder', 'updatedAt']);
+        allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(clockId);
+      }
+
+      match /calcHistory/{entryId} {
+        allow get: if isSignedIn() && request.auth.uid == userId && isValidId(entryId);
+        allow list: if isSignedIn() && request.auth.uid == userId;
+        allow create: if isSignedIn() &&
+                         request.auth.uid == userId &&
+                         isValidId(entryId) &&
+                         incoming().keys().hasAll(['userId', 'expression', 'result', 'createdAt', 'updatedAt']) &&
+                         incoming().keys().hasOnly(['userId', 'expression', 'result', 'createdAt', 'updatedAt']) &&
+                         incoming().createdAt is timestamp && incoming().createdAt <= request.time &&
+                         incoming().updatedAt is timestamp && incoming().updatedAt <= request.time &&
+                         isValidCalcHistory(incoming());
+        allow update: if false;
+        allow delete: if isSignedIn() && request.auth.uid == userId && isValidId(entryId);
+      }
+    }
+  }
+}
